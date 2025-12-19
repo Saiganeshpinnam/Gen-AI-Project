@@ -1,0 +1,10 @@
+langchain
+unstructured
+pinecone-client
+openai
+python-dotenv
+streamlit
+elevenlabs
+langgraph
+
+
