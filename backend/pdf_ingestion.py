@@ -1,34 +1,45 @@
-import tempfile
+# pdf_ingestion.py
 import os
+import tempfile
+from dotenv import load_dotenv
 
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    UnstructuredWordDocumentLoader,
+)
 
-def ingest_pdf(
-    pdf_file,
-    index_name: str,
-    embeddings,
-):
+load_dotenv()
+
+def ingest_pdf(uploaded_file, index_name: str, embeddings) -> int:
     """
-    Ingest uploaded PDF into Pinecone
+    Ingest PDF / DOC / DOCX into Pinecone
+    Returns number of chunks ingested
     """
 
-    # 1. Save uploaded file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(pdf_file.read())
-        tmp_path = tmp_file.name
+    # 1️⃣ Save uploaded file to temp file
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(uploaded_file.read())
+        temp_path = tmp.name
 
     try:
-        # 2. Load PDF
-        loader = PyPDFLoader(tmp_path)
+        # 2️⃣ Select loader
+        file_name = uploaded_file.name.lower()
+
+        if file_name.endswith(".pdf"):
+            loader = PyPDFLoader(temp_path)
+        elif file_name.endswith(".doc") or file_name.endswith(".docx"):
+            loader = UnstructuredWordDocumentLoader(temp_path)
+        else:
+            raise ValueError("❌ Unsupported file type")
+
+        # 3️⃣ Load content
         pages = loader.load()
 
-        # 3. Split into chunks
+        # 4️⃣ Split into chunks
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
             chunk_overlap=100
@@ -36,29 +47,28 @@ def ingest_pdf(
 
         docs = splitter.split_documents(pages)
 
-        # 4. Add metadata
-        enriched_docs = []
-        for doc in docs:
-            enriched_docs.append(
-                Document(
-                    page_content=doc.page_content,
-                    metadata={
-                        **doc.metadata,
-                        "source": pdf_file.name,
-                        "type": "pdf"
-                    }
-                )
+        # 5️⃣ Add metadata
+        documents = [
+            Document(
+                page_content=doc.page_content,
+                metadata={
+                    **doc.metadata,
+                    "source": uploaded_file.name
+                }
             )
+            for doc in docs
+        ]
 
-        # 5. Store in Pinecone
-        vectorstore = PineconeVectorStore(
+        # 6️⃣ Store in Pinecone
+        vectorstore = PineconeVectorStore.from_existing_index(
             index_name=index_name,
             embedding=embeddings
         )
 
-        vectorstore.add_documents(enriched_docs)
+        vectorstore.add_documents(documents)
 
-        return len(enriched_docs)
+        return len(documents)
 
     finally:
-        os.remove(tmp_path)
+        # 7️⃣ Cleanup temp file
+        os.remove(temp_path)

@@ -1,55 +1,85 @@
-from dotenv import load_dotenv
 import os
+import tempfile
+from dotenv import load_dotenv
 
 from pinecone import Pinecone
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from langchain_pinecone import PineconeVectorStore
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    UnstructuredWordDocumentLoader,
+)
 
-# Load env vars
+# ----------------------------
+# Load environment variables
+# ----------------------------
 load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 
-print("DEBUG → INDEX NAME:", PINECONE_INDEX_NAME)
+if not PINECONE_API_KEY:
+    raise ValueError("❌ PINECONE_API_KEY not set")
 
-# Init Pinecone
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(PINECONE_INDEX_NAME)
 
-# Sample text
-raw_text = """
-Employees are allowed 12 paid leaves per year.
-Work from home is allowed on Fridays.
-Office timing is 9 AM to 6 PM.
-"""
+def ingest_pdf(uploaded_file, index_name: str, embeddings) -> int:
+    """
+    Ingest PDF / DOC / DOCX into Pinecone
+    Returns number of chunks ingested
+    """
 
-# Chunking
-splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
-chunks = splitter.split_text(raw_text)
+    # 1️⃣ Save uploaded file to temp location
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(uploaded_file.read())
+        temp_path = tmp.name
 
-documents = [
-    Document(
-        page_content=chunk,
-        metadata={"source": "hr_policy.txt", "department": "HR"}
-    )
-    for chunk in chunks
-]
+    try:
+        # 2️⃣ Choose loader based on file type
+        file_name = uploaded_file.name.lower()
 
-# ✅ FREE local embeddings (NO API KEY)
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+        if file_name.endswith(".pdf"):
+            loader = PyPDFLoader(temp_path)
+        elif file_name.endswith(".doc") or file_name.endswith(".docx"):
+            loader = UnstructuredWordDocumentLoader(temp_path)
+        else:
+            raise ValueError("❌ Unsupported file type")
 
-# Connect to existing index
-vectorstore = PineconeVectorStore.from_existing_index(
-    index_name=PINECONE_INDEX_NAME,
-    embedding=embeddings
-)
+        # 3️⃣ Load document pages
+        pages = loader.load()
 
-# Add documents
-vectorstore.add_documents(documents)
+        if not pages:
+            raise ValueError("❌ No content found in document")
 
-print("✅ Ingestion completed successfully (HuggingFace)")
+        # 4️⃣ Split into chunks
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=100
+        )
+
+        chunks = splitter.split_documents(pages)
+
+        # 5️⃣ Add metadata
+        documents = [
+            Document(
+                page_content=chunk.page_content,
+                metadata={
+                    **chunk.metadata,
+                    "source": uploaded_file.name
+                }
+            )
+            for chunk in chunks
+        ]
+
+        # 6️⃣ Store in Pinecone
+        vectorstore = PineconeVectorStore.from_existing_index(
+            index_name=index_name,
+            embedding=embeddings
+        )
+
+        vectorstore.add_documents(documents)
+
+        return len(documents)
+
+    finally:
+        # 7️⃣ Cleanup temp file
+        os.remove(temp_path)
