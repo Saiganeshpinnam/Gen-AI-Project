@@ -41,7 +41,8 @@ st.subheader("📄 Upload Documents")
 
 uploaded_pdf = st.file_uploader(
     "Upload a PDF file",
-    type=["pdf"]
+    type=["pdf", "docx", "doc"]
+
 )
 
 if uploaded_pdf:
