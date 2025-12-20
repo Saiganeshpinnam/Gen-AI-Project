@@ -11,3 +11,4 @@ sentence-transformers
 huggingface-hub
 unstructured
 pypdf
+gTTs
